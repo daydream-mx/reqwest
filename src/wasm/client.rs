@@ -1,11 +1,19 @@
 use http::Method;
+use js_sys::Promise;
+use js_sys::Uint8Array;
 use std::future::Future;
 use wasm_bindgen::prelude::{wasm_bindgen, UnwrapThrowExt as _};
 use js_sys::Promise;
 use url::Url;
+use wasm_bindgen::UnwrapThrowExt as _;
+
+use crate::IntoUrl;
+use crate::wasm::client::util::GLOBAL;
 
 use super::{Request, RequestBuilder, Response};
-use crate::IntoUrl;
+
+#[macro_use]
+mod util;
 
 #[wasm_bindgen]
 extern "C" {
@@ -132,6 +140,10 @@ impl Default for Client {
     }
 }
 
+impl_window_or_worker! {
+    fn fetch_with_request(input: &web_sys::Request) -> Promise;
+}
+
 async fn fetch(req: Request) -> crate::Result<Response> {
     // Build the js Request
     let mut init = web_sys::RequestInit::new();
@@ -166,34 +178,42 @@ async fn fetch(req: Request) -> crate::Result<Response> {
         .map_err(crate::error::builder)?;
 
     // Await the fetch() promise
-    let p = fetch_with_request(&js_req);
-    let js_resp = super::promise::<web_sys::Response>(p)
-        .await
-        .map_err(crate::error::request)?;
+    let mut p: Option<Promise> = None;
+    GLOBAL.with(|global| {
+        p = Some(global.fetch_with_request(&js_req));
+    });
 
-    // Convert from the js Response
-    let mut resp = http::Response::builder()
-        .status(js_resp.status());
+    if let Some(p) = p {
+        let js_resp = super::promise::<web_sys::Response>(p)
+            .await
+            .map_err(crate::error::request)?;
 
-    let url = Url::parse(&js_resp.url()).expect_throw("url parse");
+        // Convert from the js Response
+        let mut resp = http::Response::builder()
+            .status(js_resp.status());
 
-    let js_headers = js_resp.headers();
-    let js_iter = js_sys::try_iter(&js_headers)
-        .expect_throw("headers try_iter")
-        .expect_throw("headers have an iterator");
+        let url = Url::parse(&js_resp.url()).expect_throw("url parse");
 
-    for item in js_iter {
-        let item = item.expect_throw("headers iterator doesn't throw");
-        let v: Vec<String> = item.into_serde().expect_throw("headers into_serde");
-        resp = resp.header(
-            v.get(0).expect_throw("headers name"),
-            v.get(1).expect_throw("headers value"),
-        );
+        let js_headers = js_resp.headers();
+        let js_iter = js_sys::try_iter(&js_headers)
+            .expect_throw("headers try_iter")
+            .expect_throw("headers have an iterator");
+
+        for item in js_iter {
+            let item = item.expect_throw("headers iterator doesn't throw");
+            let v: Vec<String> = item.into_serde().expect_throw("headers into_serde");
+            resp = resp.header(
+                v.get(0).expect_throw("headers name"),
+                v.get(1).expect_throw("headers value"),
+            );
+        }
+
+        resp.body(js_resp)
+            .map(|resp| Response::new(resp, url))
+            .map_err(crate::error::request)
+    } else {
+        Err(crate::error::Error::new(crate::error::Kind::FunctionUnreachable, Some("You should not reach this error")))
     }
-
-    resp.body(js_resp)
-        .map(|resp| Response::new(resp, url))
-        .map_err(crate::error::request)
 }
 
 // ===== impl ClientBuilder =====

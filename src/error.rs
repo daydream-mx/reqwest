@@ -184,7 +184,8 @@ impl fmt::Display for Error {
                     "HTTP status server error"
                 };
                 write!(f, "{} ({})", prefix, code)?;
-            }
+            },
+            Kind::FunctionUnreachable => f.write_str("you reached a part of a function that should never get reached")?,
         };
 
         ForUrl(self.inner.url.as_ref()).fmt(f)?;
@@ -225,6 +226,7 @@ pub(crate) enum Kind {
     Status(StatusCode),
     Body,
     Decode,
+    FunctionUnreachable,
 }
 
 // constructors
